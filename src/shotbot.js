@@ -8,7 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { URL } = require("url");
-const AWS = require("aws-sdk");
+const { Storage } = require("@google-cloud/storage");
 const _ = require("underscore");
 
 // Internal Modules
@@ -273,41 +273,53 @@ module.exports = class ShotBot {
 	uploadScreenshot = async (imageName) => {
 		var me = this;
 
-		if (!util.isBlank(process.env.AWS_ACCESS_KEY_ID) && 
-			!util.isBlank(process.env.AWS_SECRET_ACCESS_KEY)) {
+		if (!util.isBlank(process.env.GCP_PROJECT_ID) && 
+			!util.isBlank(process.env.GCS_BUCKET_NAME)) {
 
 			me.logger.info("uploadScreenshot : " + this.objURL);
 
 			let screenshotPath = this.screenshotPath + imageName;
 
-			const s3 = new AWS.S3({
-				accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-				secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+			// Initialize Google Cloud Storage
+			const storage = new Storage({
+				projectId: process.env.GCP_PROJECT_ID
 			});
-		
-			// Read content from the file
-			let fileContent = fs.readFileSync(screenshotPath);
+
+			const bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
+			
+			// Generate unique filename
 			let screenshotName = uuidv4();
+			let fileExtension = imageName.includes('.pdf') ? '.pdf' : '.webp';
+			let cloudFileName = screenshotName + fileExtension;
+			
+			const file = bucket.file(cloudFileName);
 
-			// Setting up S3 upload parameters
-			const params = {
-				Bucket: "",	// TODO: 
-				Key: "screenshotcrew/" + screenshotName + ".webp",	// File name you want to save as in S3
-				Body: fileContent
-			};
-
-			return new Promise(function (resolve, reject) {
-				// Uploading files to the bucket
-				s3.upload(params, function(err, data) {
-					if (err) {
-						reject(err);
-					}
-
-					resolve(data);
+			try {
+				// Upload file to GCS
+				await bucket.upload(screenshotPath, {
+					destination: cloudFileName,
+					metadata: {
+						cacheControl: 'public, max-age=31536000',
+					},
 				});
-			});
+
+				me.logger.info("File uploaded successfully: " + cloudFileName);
+
+				// Return data in format similar to AWS response
+				return {
+					Location: `https://storage.googleapis.com/${process.env.GCS_BUCKET_NAME}/${cloudFileName}`,
+					FilePath: `https://storage.googleapis.com/${process.env.GCS_BUCKET_NAME}/${cloudFileName}`,
+					Key: cloudFileName,
+					Bucket: process.env.GCS_BUCKET_NAME
+				};
+
+			} catch (error) {
+				me.logger.error("Upload error:", error);
+				throw error;
+			}
 		}
 		else {
+			me.logger.info("GCP credentials not configured, storing locally only");
 			return Promise.resolve(null);
 		}
 	}
